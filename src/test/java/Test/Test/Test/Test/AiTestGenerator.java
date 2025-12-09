@@ -18,7 +18,7 @@ public class AiTestGenerator {
     WebDriver driver;
     WebDriverWait wait;
 
-    String API_KEY = "AIzaSyAF2ZjZOZo8cApoK7mJZeJcYx54YDE2O2E";
+    String API_KEY = "AIzaSyAF2ZjZOZo8cApoK7mJZeJcYx54YDE2O2E";  //Enter API Key
 
     // 💠 Global sleep for ALL element actions (your requirement)
     private void sleep5() {
