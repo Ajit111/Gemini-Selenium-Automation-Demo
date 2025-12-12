@@ -4,40 +4,60 @@ import org.openqa.selenium.*;
 import org.openqa.selenium.chrome.*;
 import io.github.bonigarcia.wdm.WebDriverManager;
 import org.testng.annotations.*;
-import org.openqa.selenium.support.ui.ExpectedConditions;
-import org.openqa.selenium.support.ui.WebDriverWait;
+import org.openqa.selenium.support.ui.*;
 
 import okhttp3.*;
 import com.google.gson.*;
 
+import java.io.File;
+import java.nio.file.Files;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
+
+import com.aventstack.extentreports.*;
+import com.aventstack.extentreports.reporter.ExtentSparkReporter;
 
 public class AiTestGenerator {
 
     WebDriver driver;
     WebDriverWait wait;
 
-    String API_KEY = "AIzaSyAF2ZjZOZo8cApoK7mJZeJcYx54YDE2O2E";  //Enter API Key
+    ExtentReports extent;
+    ExtentTest test;
 
-    // 💠 Global sleep for ALL element actions (your requirement)
-    private void sleep5() {
-        try { Thread.sleep(5000); } catch (Exception ignored) {}
+    String API_KEY = "AIzaSyD5-F_7lU280QM5oO__ZFlqL8UkJ9qb6YU";
+
+    // ⭐ Updated wait from 5 sec → 2 sec
+    private void sleep2() {
+        try { Thread.sleep(2000); } catch (Exception ignored) {}
     }
 
     @BeforeClass
     public void setUp() {
+
+        // ----------------- EXTENT REPORT SETUP -----------------
+        extent = new ExtentReports();
+        ExtentSparkReporter spark = new ExtentSparkReporter("AI-Selenium-Report.html");
+        extent.attachReporter(spark);
+        test = extent.createTest("AI Based Selenium Execution");
+
+        // ----------------- SELENIUM SETUP ----------------------
         WebDriverManager.chromedriver().setup();
         ChromeOptions opt = new ChromeOptions();
         opt.addArguments("--remote-allow-origins=*");
         opt.addArguments("--incognito");
+
         driver = new ChromeDriver(opt);
         wait = new WebDriverWait(driver, Duration.ofSeconds(10));
         driver.manage().window().maximize();
+
+        test.info("Browser launched successfully.");
     }
 
-    // ⭐ Gemini 2.5 Flash Lite API Call
+    // ---------------- GEMINI CALL ------------------
     private JsonArray callGemini(String prompt) throws Exception {
+
+        test.info("Calling Gemini AI Model...");
 
         OkHttpClient client = new OkHttpClient.Builder()
                 .connectTimeout(30, TimeUnit.SECONDS)
@@ -52,6 +72,7 @@ public class AiTestGenerator {
         parts.add(textObj);
 
         JsonObject content = new JsonObject();
+        content.addProperty("role", "user");
         content.add("parts", parts);
 
         JsonArray contents = new JsonArray();
@@ -60,39 +81,57 @@ public class AiTestGenerator {
         JsonObject payload = new JsonObject();
         payload.add("contents", contents);
 
-        RequestBody body = RequestBody.create(payload.toString(), MediaType.parse("application/json"));
+        RequestBody body = RequestBody.create(
+                payload.toString(),
+                MediaType.parse("application/json")
+        );
 
-        Request request = new Request.Builder()
-                .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=" + API_KEY)
+        Request req = new Request.Builder()
+                .url("https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-lite:generateContent?key=" + API_KEY)
                 .post(body)
                 .build();
 
-        Response resp = client.newCall(request).execute();
-        String jsonText = resp.body().string();
+        Response resp = client.newCall(req).execute();
+        String raw = resp.body().string();
 
-        JsonObject json = JsonParser.parseString(jsonText).getAsJsonObject();
+        test.info("Gemini Raw Response Received.");
+        System.out.println(raw);
 
-        String aiText =
-                json.getAsJsonArray("candidates")
-                    .get(0).getAsJsonObject()
-                    .getAsJsonObject("content")
-                    .getAsJsonArray("parts")
-                    .get(0).getAsJsonObject()
-                    .get("text").getAsString();
+        JsonObject json = JsonParser.parseString(raw).getAsJsonObject();
+
+        if (json.has("error")) {
+            test.fail("Gemini Error: " + json.get("error").toString());
+            throw new RuntimeException("Gemini Error: " + json.get("error").getAsJsonObject().toString());
+        }
+
+        String aiText = json.getAsJsonArray("candidates")
+                .get(0).getAsJsonObject()
+                .getAsJsonObject("content")
+                .getAsJsonArray("parts")
+                .get(0).getAsJsonObject()
+                .get("text").getAsString();
+
+        aiText = aiText.replace("```json", "").replace("```", "").trim();
+
+        test.pass("Gemini provided steps successfully.");
 
         return convert(aiText);
     }
 
-    // Convert plain text to JSON steps
+    // ---------------- CONVERT AI TEXT → JSON ------------------
     private JsonArray convert(String text) {
+
+        test.info("Converting AI Steps...");
+
         JsonArray steps = new JsonArray();
 
         for (String line : text.split("\n")) {
+
             if (!line.contains(":")) continue;
 
             String[] arr = line.split(":", 2);
             String action = arr[0].trim();
-            String value = arr[1].trim();
+            String data = arr[1].trim();
 
             JsonObject o = new JsonObject();
 
@@ -100,138 +139,156 @@ public class AiTestGenerator {
 
                 case "open":
                     o.addProperty("action", "open");
-                    o.addProperty("value", value);
+                    o.addProperty("value", data);
+                    test.info("AI Step: Open URL → " + data);
                     break;
 
                 case "type":
-                    String[] p = value.split(" ", 2);
+                    String[] p = data.split(" ", 2);
+                    if (p.length < 2) continue;
                     o.addProperty("action", "type");
                     o.addProperty("locator", p[0]);
                     o.addProperty("value", p[1]);
+                    test.info("AI Step: Type → " + p[0] + " = " + p[1]);
                     break;
 
                 case "click":
                     o.addProperty("action", "click");
-                    o.addProperty("locator", value);
+                    o.addProperty("locator", data);
+                    test.info("AI Step: Click → " + data);
                     break;
             }
+
             steps.add(o);
         }
+
         return steps;
     }
 
-    // ⭐ ULTRA SMART LOCATOR ENGINE (auto-corrects wrong id=shopping_cart_link bug)
+    // ---------------- SMART LOCATOR ------------------
     private WebElement findElementSmart(String locator) {
 
-        sleep5(); // You requested wait before EACH step
+        sleep2(); // ⭐ updated here
 
-        // ⭐ Auto-correct Gemini incorrect locator for cart
+        test.info("Finding Element → " + locator);
+
         if (locator.equals("id=shopping_cart_link")) {
             locator = "class=shopping_cart_link";
         }
 
-        // xpath
-        if (locator.startsWith("//")) {
-            return wait.until(ExpectedConditions.visibilityOfElementLocated(By.xpath(locator)));
+        try {
+            if (locator.startsWith("//"))
+                return wait.until(ExpectedConditions.visibilityOfElementLocated(By.xpath(locator)));
+
+            if (locator.startsWith("id="))
+                return wait.until(ExpectedConditions.visibilityOfElementLocated(By.id(locator.substring(3))));
+
+            if (locator.startsWith("class="))
+                return wait.until(ExpectedConditions.visibilityOfElementLocated(By.className(locator.substring(6))));
+
+            if (locator.startsWith("name="))
+                return wait.until(ExpectedConditions.visibilityOfElementLocated(By.name(locator.substring(5))));
+
+            if (locator.startsWith("css="))
+                return wait.until(ExpectedConditions.visibilityOfElementLocated(By.cssSelector(locator.substring(4))));
+
+        } catch (Exception ex) {
+            takeScreenshot("ElementNotFound");
+            test.fail("❌ Element NOT found → " + locator);
+            throw new RuntimeException("Element not found: " + locator);
         }
 
-        // id=
-        if (locator.startsWith("id=")) {
-            String v = locator.substring(3);
-            try { return wait.until(ExpectedConditions.visibilityOfElementLocated(By.id(v))); }
-            catch (Exception ignored) {}
-            // fallback to className
-            return wait.until(ExpectedConditions.visibilityOfElementLocated(By.className(v)));
-        }
-
-        // class=
-        if (locator.startsWith("class=")) {
-            String v = locator.substring(6);
-            return wait.until(ExpectedConditions.visibilityOfElementLocated(By.className(v)));
-        }
-
-        // name=
-        if (locator.startsWith("name=")) {
-            String v = locator.substring(5);
-            return wait.until(ExpectedConditions.visibilityOfElementLocated(By.name(v)));
-        }
-
-        // css=
-        if (locator.startsWith("css=")) {
-            String v = locator.substring(4);
-            return wait.until(ExpectedConditions.visibilityOfElementLocated(By.cssSelector(v)));
-        }
-
-        // fallback attempts
-        try { return wait.until(ExpectedConditions.visibilityOfElementLocated(By.id(locator))); }
-        catch (Exception ignored) {}
-
-        try { return wait.until(ExpectedConditions.visibilityOfElementLocated(By.className(locator))); }
-        catch (Exception ignored) {}
-
-        try { return wait.until(ExpectedConditions.visibilityOfElementLocated(By.name(locator))); }
-        catch (Exception ignored) {}
-
-        throw new RuntimeException("❌ Element not found: " + locator);
+        return null;
     }
 
-    // ⭐ Execute AI Steps
+    // ---------------- EXECUTE AI STEPS ------------------
     private void execute(JsonArray steps) throws Exception {
+
         for (JsonElement e : steps) {
+
             JsonObject s = e.getAsJsonObject();
             String action = s.get("action").getAsString();
 
             switch (action) {
 
                 case "open":
-                    sleep5();
+                    sleep2();
                     driver.get(s.get("value").getAsString());
+                    test.pass("Opened URL: " + s.get("value").getAsString());
                     break;
 
                 case "type":
-                    sleep5();
+                    sleep2();
                     findElementSmart(s.get("locator").getAsString())
                             .sendKeys(s.get("value").getAsString());
+                    test.pass("Typed into: " + s.get("locator").getAsString());
                     break;
 
                 case "click":
-                    sleep5();
+                    sleep2();
                     findElementSmart(s.get("locator").getAsString()).click();
+                    test.pass("Clicked on: " + s.get("locator").getAsString());
                     break;
             }
         }
     }
 
-    // ⭐ TEST  
+    // ---------------- SCREENSHOT METHOD ------------------
+    private String takeScreenshot(String name) {
+        try {
+            File src = ((TakesScreenshot) driver).getScreenshotAs(OutputType.FILE);
+            String path = "screenshots/" + name + "_" + System.currentTimeMillis() + ".png";
+
+            Files.createDirectories(new File("screenshots").toPath());
+            File dest = new File(path);
+            Files.copy(src.toPath(), dest.toPath());
+
+            test.addScreenCaptureFromPath(path);
+            return path;
+
+        } catch (Exception ex) {
+            test.warning("Screenshot failed: " + ex.getMessage());
+            return null;
+        }
+    }
+
+    // ---------------- MAIN TEST ------------------
     @Test
     public void aiSeleniumTest() throws Exception {
 
         String prompt =
-                "Generate Selenium steps strictly in this exact format:\n" +
-                "open: https://www.saucedemo.com/\n" +
-                "type: id=user-name standard_user\n" +
-                "type: id=password secret_sauce\n" +
-                "click: id=login-button\n" +
-                "click: id=add-to-cart-sauce-labs-backpack\n" +
-                "click: id=shopping_cart_link\n" +   // Gemini will write wrong, we auto-correct
-                "click: id=checkout\n" +
-                "type: id=first-name John\n" +
-                "type: id=last-name Doe\n" +
-                "type: id=postal-code 12345\n" +
-                "click: id=continue\n" +
-                "click: id=finish";
+                "Generate Selenium steps in EXACT format below:\n" +
+                        "open: https://www.saucedemo.com/\n" +
+                        "type: id=user-name standard_user\n" +
+                        "type: id=password secret_sauce\n" +
+                        "click: id=login-button\n" +
+                        "click: id=add-to-cart-sauce-labs-backpack\n" +
+                        "click: id=shopping_cart_link\n" +
+                        "click: id=checkout\n" +
+                        "type: id=first-name John\n" +
+                        "type: id=last-name Doe\n" +
+                        "type: id=postal-code 12345\n" +
+                        "click: id=continue\n" +
+                        "click: id=finish\n" +
+                        "NO markdown, NO explanation, ONLY raw steps.";
 
         JsonArray steps = callGemini(prompt);
 
-        System.out.println("AI Steps:");
+        test.info("Final AI Steps Received.");
         System.out.println(steps);
 
         execute(steps);
+
+        test.pass("AI Driven Selenium Test Executed Successfully!");
     }
 
     @AfterClass
-    public void tearDown() throws Exception {
-        Thread.sleep(3000);
+    public void tearDown() {
+
+        test.info("Closing Browser...");
+        sleep2();
         driver.quit();
+
+        extent.flush();
     }
 }
