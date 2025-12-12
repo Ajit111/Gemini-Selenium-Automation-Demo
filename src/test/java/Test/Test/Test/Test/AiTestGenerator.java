@@ -25,7 +25,7 @@ public class AiTestGenerator {
     ExtentReports extent;
     ExtentTest test;
 
-    String API_KEY = "AIzaSyD5-F_7lU280QM5oO__ZFlqL8UkJ9qb6YU";
+    String API_KEY = "Enter Api Key";
 
     // ⭐ Updated wait from 5 sec → 2 sec
     private void sleep2() {
